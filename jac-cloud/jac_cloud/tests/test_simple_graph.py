@@ -560,19 +560,19 @@ class SimpleGraphTest(JacCloudTest):
                             "single": {
                                 "name": "simple_graph.jac",
                                 "content_type": "application/octet-stream",
-                                "size": 17352,
+                                "size": 17306,
                             }
                         },
                         "multiple": [
                             {
                                 "name": "simple_graph.jac",
                                 "content_type": "application/octet-stream",
-                                "size": 17352,
+                                "size": 17306,
                             },
                             {
                                 "name": "simple_graph.jac",
                                 "content_type": "application/octet-stream",
-                                "size": 17352,
+                                "size": 17306,
                             },
                         ],
                         "singleOptional": None,

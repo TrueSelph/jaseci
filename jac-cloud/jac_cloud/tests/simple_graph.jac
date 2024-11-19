@@ -751,7 +751,7 @@ walker get_custom_object {
     can enter1 with `root entry {
         import:py from jac_cloud.core.architype {BaseAnchor}
         try {
-            report BaseAnchor.ref(self.object_id).architype;
+            report &(self.object_id);
         } except Exception as e {
             report None;
         }
@@ -763,7 +763,7 @@ walker update_custom_object {
 
     can enter1 with `root entry {
         import:py from jac_cloud.core.architype {BaseAnchor}
-        savable_object = BaseAnchor.ref(self.object_id).architype;
+        savable_object = &(self.object_id);
         savable_object.parent.child.json["c"] = 3;
         savable_object.parent.child.arr.append(3);
         savable_object.parent.child.val = 3;
