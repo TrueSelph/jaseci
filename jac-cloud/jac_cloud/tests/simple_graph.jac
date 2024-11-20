@@ -749,7 +749,6 @@ walker get_custom_object {
     has object_id: str;
 
     can enter1 with `root entry {
-        import:py from jac_cloud.core.architype {BaseAnchor}
         try {
             report &(self.object_id);
         } except Exception as e {
@@ -762,7 +761,6 @@ walker update_custom_object {
     has object_id: str;
 
     can enter1 with `root entry {
-        import:py from jac_cloud.core.architype {BaseAnchor}
         savable_object = &(self.object_id);
         savable_object.parent.child.json["c"] = 3;
         savable_object.parent.child.arr.append(3);
@@ -785,6 +783,13 @@ walker delete_custom_object {
 
     can enter1 with `root entry {
         import:py from jac_cloud.core.architype {BaseAnchor}
-        Jac.destroy(BaseAnchor.ref(self.object_id));
+        Jac.destroy(&(self.object_id));
+
+        # This is similar to
+        #
+        # Jac.destroy(BaseAnchor.ref(self.object_id));
+        #
+        # The only difference is BaseAnchor.ref doesn't
+        # load the actual object and just use it as reference
     }
 }
