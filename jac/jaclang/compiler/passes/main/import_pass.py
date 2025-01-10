@@ -44,7 +44,7 @@ class JacImportPass(Pass):
             for i in all_imports:
                 self.process_import(i)
                 self.enter_module_path(i)
-            SubNodeTabPass(prior=self, input_ir=node)
+        SubNodeTabPass(prior=self, input_ir=node)
 
         node.mod_deps.update(self.import_table)
 
