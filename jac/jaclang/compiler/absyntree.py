@@ -30,6 +30,7 @@ from jaclang.compiler.constant import (
     SymbolType,
 )
 from jaclang.compiler.constant import DELIM_MAP, SymbolAccess, Tokens as Tok
+from jaclang.compiler.py_info import PyInfo
 from jaclang.compiler.semtable import SemRegistry
 from jaclang.utils.treeprinter import dotgen_ast_tree, print_ast_tree
 
@@ -636,11 +637,10 @@ class Module(AstDocNode):
         self.impl_mod: list[Module] = []
         self.test_mod: list[Module] = []
         self.mod_deps: dict[str, Module] = {}
-        self.py_mod_dep_map: dict[str, str] = {}
-        self.py_raise_map: dict[str, str] = {}
         self.registry = registry
         self.terminals: list[Token] = terminals
-        self.is_raised_from_py: bool = False
+        self.py_info: PyInfo = PyInfo()
+
         AstNode.__init__(self, kid=kid)
         AstDocNode.__init__(self, doc=doc)
 
@@ -692,6 +692,21 @@ class Module(AstDocNode):
         """Unparse module node."""
         super().unparse()
         return self.format()
+
+    @staticmethod
+    def get_href_path(node: AstNode) -> str:
+        """Return the full path of the module that contains this node."""
+        parent = node.find_parent_of_type(Module)
+        mod_list: list[Module | Architype] = []
+        if isinstance(node, (Module, Architype)):
+            mod_list.append(node)
+        while parent is not None:
+            mod_list.append(parent)
+            parent = parent.find_parent_of_type(Module)
+        mod_list.reverse()
+        return ".".join(
+            p.name if isinstance(p, Module) else p.name.sym_name for p in mod_list
+        )
 
 
 class GlobalVars(ElementStmt, AstAccessNode):
@@ -998,8 +1013,9 @@ class ModulePath(AstSymbolNode):
         target = self.dot_path_str
         if target_item:
             target += f".{target_item}"
-        base_path = os.path.dirname(self.loc.mod_path)
-        base_path = base_path if base_path else os.getcwd()
+        base_path = (
+            os.getenv("JACPATH") or os.path.dirname(self.loc.mod_path) or os.getcwd()
+        )
         parts = target.split(".")
         traversal_levels = self.level - 1 if self.level > 0 else 0
         actual_parts = parts[traversal_levels:]
@@ -1011,6 +1027,15 @@ class ModulePath(AstSymbolNode):
             if os.path.exists(relative_path + ".jac")
             else relative_path
         )
+        jacpath = os.getenv("JACPATH")
+        if not os.path.exists(relative_path) and jacpath:
+            name_to_find = actual_parts[-1] + ".jac"
+
+            # Walk through the single path in JACPATH
+            for root, _, files in os.walk(jacpath):
+                if name_to_find in files:
+                    relative_path = os.path.join(root, name_to_find)
+                    break
         return relative_path
 
     def normalize(self, deep: bool = False) -> bool:

@@ -12,6 +12,7 @@ from enum import Enum
 from os import getenv
 from pickle import dumps as pdumps
 from re import IGNORECASE, compile
+from types import UnionType
 from typing import (
     Any,
     ClassVar,
@@ -31,17 +32,19 @@ from jaclang.runtimelib.architype import (
     Access as _Access,
     AccessLevel,
     Anchor,
-    Architype,
     DSFunc,
     EdgeAnchor as _EdgeAnchor,
     EdgeArchitype as _EdgeArchitype,
     NodeAnchor as _NodeAnchor,
     NodeArchitype as _NodeArchitype,
+    ObjectAnchor as _ObjectAnchor,
+    ObjectArchitype as _ObjectArchitype,
     Permission as _Permission,
     TANCH,
     WalkerAnchor as _WalkerAnchor,
     WalkerArchitype as _WalkerArchitype,
 )
+from jaclang.runtimelib.utils import is_instance
 
 from orjson import dumps
 
@@ -53,10 +56,11 @@ from ..jaseci.datasources import Collection as BaseCollection
 from ..jaseci.utils import logger
 
 MANUAL_SAVE = getenv("MANUAL_SAVE")
-GENERIC_ID_REGEX = compile(r"^(n|e|w):([^:]*):([a-f\d]{24})$", IGNORECASE)
+GENERIC_ID_REGEX = compile(r"^(n|e|w|o):([^:]*):([a-f\d]{24})$", IGNORECASE)
 NODE_ID_REGEX = compile(r"^n:([^:]*):([a-f\d]{24})$", IGNORECASE)
 EDGE_ID_REGEX = compile(r"^e:([^:]*):([a-f\d]{24})$", IGNORECASE)
 WALKER_ID_REGEX = compile(r"^w:([^:]*):([a-f\d]{24})$", IGNORECASE)
+OBJECT_ID_REGEX = compile(r"^o:([^:]*):([a-f\d]{24})$", IGNORECASE)
 T = TypeVar("T")
 TBA = TypeVar("TBA", bound="BaseArchitype")
 
@@ -100,13 +104,21 @@ def architype_to_dataclass(cls: type[T], data: dict[str, Any], **kwargs: object)
             else:
                 hinter = hintings[attr.name]
                 origin = get_origin(hinter)
-                if isinstance(val, origin or hinter):
+                if hinter == Any:
                     setattr(architype, attr.name, val)
-                else:
-                    raise ValueError(
-                        f"Data from datasource has type {val.__class__.__name__}"
-                        f" but {cls.__name__}.{attr.name} requires {hinter}."
-                    )
+                    continue
+                elif origin == UnionType or origin is None:
+                    if is_instance(val, hinter):
+                        setattr(architype, attr.name, val)
+                        continue
+                elif origin and is_instance(val, origin):
+                    setattr(architype, attr.name, val)
+                    continue
+                raise ValueError(
+                    f"Data from datasource has type {val.__class__.__name__}"
+                    f" but {cls.__name__}.{attr.name} requires {hinter}."
+                )
+
     architype.__dict__.update(data)
     architype.__dict__.update(kwargs)
     return architype
@@ -141,7 +153,8 @@ def _to_dataclass(cls: type[T], data: dict[str, Any]) -> None:
                         for key, value in enumerate(target):
                             target[key] = to_dataclass(inner_cls, value)
                     elif (
-                        issubclass(hint, Enum)
+                        origin != UnionType
+                        and issubclass(hint, Enum)
                         and isinstance(target, str)
                         and (enum := hint.__members__.get(target))
                     ):
@@ -167,12 +180,14 @@ class BulkWrite:
             NodeAnchor: [],
             EdgeAnchor: [],
             WalkerAnchor: [],
+            ObjectAnchor: [],
         }
     )
 
     del_ops_nodes: list[ObjectId] = field(default_factory=list)
     del_ops_edges: list[ObjectId] = field(default_factory=list)
     del_ops_walker: list[ObjectId] = field(default_factory=list)
+    del_ops_object: list[ObjectId] = field(default_factory=list)
 
     def del_node(self, id: ObjectId) -> None:
         """Add node to delete many operations."""
@@ -201,6 +216,15 @@ class BulkWrite:
 
         self.del_ops_walker.append(id)
 
+    def del_object(self, id: ObjectId) -> None:
+        """Add walker to delete many operations."""
+        if not self.del_ops_object:
+            self.operations[ObjectAnchor].append(
+                DeleteMany({"_id": {"$in": self.del_ops_object}})
+            )
+
+        self.del_ops_object.append(id)
+
     @property
     def has_operations(self) -> bool:
         """Check if has operations."""
@@ -210,33 +234,33 @@ class BulkWrite:
     def commit(session: ClientSession) -> None:
         """Commit current session."""
         commit_retry = 0
-        commit_max_retry = BulkWrite.SESSION_MAX_COMMIT_RETRY
-        while commit_retry <= commit_max_retry:
+        while True:
             try:
                 session.commit_transaction()
                 break
             except (ConnectionFailure, OperationFailure) as ex:
-                if ex.has_error_label("UnknownTransactionCommitResult"):
+                if (
+                    ex.has_error_label("UnknownTransactionCommitResult")
+                    and commit_retry <= BulkWrite.SESSION_MAX_COMMIT_RETRY
+                ):
                     commit_retry += 1
-                    logger.error(
-                        "Error commiting bulk write! "
-                        f"Retrying [{commit_retry}/{commit_max_retry}] ..."
+                    logger.exception(
+                        "Error commiting session! "
+                        f"Retrying [{commit_retry}/{BulkWrite.SESSION_MAX_COMMIT_RETRY}] ..."
                     )
                     continue
-                logger.error(
-                    f"Error commiting bulk write after max retry [{commit_max_retry}] !"
+                logger.exception(
+                    f"Error commiting session after max retry [{BulkWrite.SESSION_MAX_COMMIT_RETRY}] !"
                 )
                 raise
             except Exception:
-                session.abort_transaction()
-                logger.error("Error commiting bulk write!")
+                logger.exception("Error commiting session!")
                 raise
 
     def execute(self, session: ClientSession) -> None:
         """Execute all operations."""
         transaction_retry = 0
-        transaction_max_retry = self.SESSION_MAX_TRANSACTION_RETRY
-        while transaction_retry <= transaction_max_retry:
+        while True:
             try:
                 if node_operation := self.operations[NodeAnchor]:
                     NodeAnchor.Collection.bulk_write(node_operation, False, session)
@@ -244,22 +268,27 @@ class BulkWrite:
                     EdgeAnchor.Collection.bulk_write(edge_operation, False, session)
                 if walker_operation := self.operations[WalkerAnchor]:
                     WalkerAnchor.Collection.bulk_write(walker_operation, False, session)
+                if object_operation := self.operations[ObjectAnchor]:
+                    ObjectAnchor.Collection.bulk_write(object_operation, False, session)
                 self.commit(session)
                 break
             except (ConnectionFailure, OperationFailure) as ex:
-                if ex.has_error_label("TransientTransactionError"):
+                if (
+                    ex.has_error_label("TransientTransactionError")
+                    and transaction_retry <= self.SESSION_MAX_TRANSACTION_RETRY
+                ):
                     transaction_retry += 1
-                    logger.error(
+                    logger.exception(
                         "Error executing bulk write! "
-                        f"Retrying [{transaction_retry}/{transaction_max_retry}] ..."
+                        f"Retrying [{transaction_retry}/{self.SESSION_MAX_TRANSACTION_RETRY}] ..."
                     )
                     continue
-                logger.error(
-                    f"Error executing bulk write after max retry [{transaction_max_retry}] !"
+                logger.exception(
+                    f"Error executing bulk write after max retry [{self.SESSION_MAX_TRANSACTION_RETRY}] !"
                 )
                 raise
             except Exception:
-                logger.error("Error executing bulk write!")
+                logger.exception("Error executing bulk write!")
                 raise
 
 
@@ -346,13 +375,15 @@ class BaseAnchor:
                     cls = EdgeAnchor
                 case "w":
                     cls = WalkerAnchor
+                case "o":
+                    cls = ObjectAnchor
                 case _:
-                    raise ValueError(f"{ref_id}] is not a valid reference!")
+                    raise ValueError(f"[{ref_id}] is not a valid reference!")
             anchor = object.__new__(cls)
             anchor.name = str(match.group(2))
             anchor.id = ObjectId(match.group(3))
             return anchor
-        raise ValueError(f"{ref_id}] is not a valid reference!")
+        raise ValueError(f"[{ref_id}] is not a valid reference!")
 
     ####################################################
     #                 QUERY OPERATIONS                 #
@@ -529,7 +560,7 @@ class BaseAnchor:
             ############################################################
             #                   POPULATE ADDED EDGES                   #
             ############################################################
-            added_edges: set[BaseAnchor | Anchor] = (
+            added_edges: set[BaseAnchor] = (
                 changes.get("$addToSet", {}).get("edges", {}).get("$each", [])
             )
             if added_edges:
@@ -547,7 +578,7 @@ class BaseAnchor:
             ############################################################
             #                  POPULATE REMOVED EDGES                  #
             ############################################################
-            pulled_edges: set[BaseAnchor | Anchor] = (
+            pulled_edges: set[BaseAnchor] = (
                 changes.get("$pull", {}).get("edges", {}).get("$in", [])
             )
             if pulled_edges:
@@ -800,10 +831,10 @@ class WalkerAnchor(BaseAnchor, _WalkerAnchor):  # type: ignore[misc]
     """Walker Anchor."""
 
     architype: "WalkerArchitype"
-    path: list[Anchor] = field(default_factory=list)
-    next: list[Anchor] = field(default_factory=list)
+    path: list[NodeAnchor] = field(default_factory=list)  # type: ignore[assignment]
+    next: list[NodeAnchor] = field(default_factory=list)  # type: ignore[assignment]
     returns: list[Any] = field(default_factory=list)
-    ignores: list[Anchor] = field(default_factory=list)
+    ignores: list[NodeAnchor] = field(default_factory=list)  # type: ignore[assignment]
     disengaged: bool = False
 
     class Collection(BaseCollection["WalkerAnchor"]):
@@ -857,8 +888,60 @@ class WalkerAnchor(BaseAnchor, _WalkerAnchor):  # type: ignore[misc]
 
 
 @dataclass(eq=False, repr=False, kw_only=True)
-class ObjectAnchor(BaseAnchor, Anchor):  # type: ignore[misc]
+class ObjectAnchor(BaseAnchor, _ObjectAnchor):  # type: ignore[misc]
     """Object Anchor."""
+
+    architype: "ObjectArchitype"
+
+    class Collection(BaseCollection["ObjectAnchor"]):
+        """ObjectAnchor collection interface."""
+
+        __collection__: str | None = "object"
+        __default_indexes__: list[dict] = [
+            {"keys": [("_id", ASCENDING), ("name", ASCENDING), ("root", ASCENDING)]}
+        ]
+
+        @classmethod
+        def __document__(cls, doc: Mapping[str, Any]) -> "ObjectAnchor":
+            """Parse document to NodeAnchor."""
+            doc = cast(dict, doc)
+
+            architype = architype_to_dataclass(
+                ObjectArchitype.__get_class__(doc.get("name") or "Root"),
+                doc.pop("architype"),
+            )
+            anchor = ObjectAnchor(
+                architype=architype,
+                id=doc.pop("_id"),
+                access=Permission.deserialize(doc.pop("access")),
+                state=AnchorState(connected=True),
+                persistent=True,
+                **doc,
+            )
+            architype.__jac__ = anchor
+            anchor.sync_hash()
+            return anchor
+
+    @classmethod
+    def ref(cls, ref_id: str) -> "ObjectAnchor":
+        """Return NodeAnchor instance if existing."""
+        if match := NODE_ID_REGEX.search(ref_id):
+            anchor = object.__new__(cls)
+            anchor.name = str(match.group(1))
+            anchor.id = ObjectId(match.group(2))
+            return anchor
+        raise ValueError(f"[{ref_id}] is not a valid reference!")
+
+    def insert(
+        self,
+        bulk_write: BulkWrite,
+    ) -> None:
+        """Append Insert Query."""
+        bulk_write.operations[ObjectAnchor].append(InsertOne(self.serialize()))
+
+    def delete(self, bulk_write: BulkWrite) -> None:
+        """Append Delete Query."""
+        bulk_write.del_node(self.id)
 
 
 class BaseArchitype:
@@ -960,7 +1043,7 @@ class WalkerArchitype(BaseArchitype, _WalkerArchitype):
         return f"w:{cls.__name__}"
 
 
-class ObjectArchitype(BaseArchitype, Architype):
+class ObjectArchitype(BaseArchitype, _ObjectArchitype):
     """Object Architype Protocol."""
 
     __jac__: ObjectAnchor

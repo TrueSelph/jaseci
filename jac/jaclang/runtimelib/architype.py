@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from enum import IntEnum
+from functools import cached_property
 from logging import getLogger
 from pickle import dumps
 from types import UnionType
@@ -43,9 +44,9 @@ class Access:
 
     anchors: dict[str, AccessLevel] = field(default_factory=dict)
 
-    def check(self, anchor: str) -> AccessLevel:
+    def check(self, anchor: str) -> AccessLevel | None:
         """Validate access."""
-        return self.anchors.get(anchor, AccessLevel.NO_ACCESS)
+        return self.anchors.get(anchor)
 
 
 @dataclass
@@ -220,10 +221,17 @@ class WalkerAnchor(Anchor):
     """Walker Anchor."""
 
     architype: WalkerArchitype
-    path: list[Anchor] = field(default_factory=list)
-    next: list[Anchor] = field(default_factory=list)
-    ignores: list[Anchor] = field(default_factory=list)
+    path: list[NodeAnchor] = field(default_factory=list)
+    next: list[NodeAnchor] = field(default_factory=list)
+    ignores: list[NodeAnchor] = field(default_factory=list)
     disengaged: bool = False
+
+
+@dataclass(eq=False, repr=False, kw_only=True)
+class ObjectAnchor(Anchor):
+    """Edge Anchor."""
+
+    architype: ObjectArchitype
 
 
 class Architype:
@@ -267,6 +275,16 @@ class WalkerArchitype(Architype):
         self.__jac__ = WalkerAnchor(architype=self)
 
 
+class ObjectArchitype(Architype):
+    """Walker Architype Protocol."""
+
+    __jac__: ObjectAnchor
+
+    def __init__(self) -> None:
+        """Create walker architype."""
+        self.__jac__ = ObjectAnchor(architype=self)
+
+
 @dataclass(eq=False)
 class GenericEdge(EdgeArchitype):
     """Generic Root Node."""
@@ -294,17 +312,20 @@ class DSFunc:
     name: str
     func: Callable[[Any, Any], Any] | None = None
 
+    @cached_property
+    def trigger(self) -> type | UnionType | tuple[type | UnionType, ...] | None:
+        """Get function parameter annotations."""
+        t = (
+            (
+                inspect.signature(self.func, eval_str=True)
+                .parameters["_jac_here_"]
+                .annotation
+            )
+            if self.func
+            else None
+        )
+        return None if t is inspect._empty else t
+
     def resolve(self, cls: type) -> None:
         """Resolve the function."""
         self.func = getattr(cls, self.name)
-
-    def get_funcparam_annotations(
-        self, func: Callable[[Any, Any], Any] | None
-    ) -> type | UnionType | tuple[type | UnionType, ...] | None:
-        """Get function parameter annotations."""
-        if not func:
-            return None
-        annotation = (
-            inspect.signature(func, eval_str=True).parameters["_jac_here_"].annotation
-        )
-        return annotation if annotation != inspect._empty else None

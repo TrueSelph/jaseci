@@ -118,9 +118,9 @@ class JacLanguageTests(TestCase):
         stdout_value = captured_output.getvalue()
 
         expected_outputs = [
-            "+-- AtomTrailer - Type: numpy.ndarray[Any, numpy.dtype[Any]]",
-            "    +-- Name - arr - Type: numpy.ndarray[Any, numpy.dtype[Any]],  SymbolTable: None",
-            "    +-- IndexSlice - [IndexSlice] - Type: builtins.slice,  SymbolTable: None",
+            "+-- AtomTrailer - Type: builtins.list[builtins.int]",
+            "    +-- Name - arr - Type: builtins.list[builtins.list[builtins.int]],  SymbolTable: list",
+            "    +-- IndexSlice - [IndexSlice] - Type: builtins.list[builtins.list[builtins.int]],  SymbolTable: None",
             "        +-- Token - [,",
             "        +-- Int - 1 - Type: Literal[1]?,  SymbolTable: None",
             "        +-- Token - :,",
@@ -548,7 +548,7 @@ class JacLanguageTests(TestCase):
                 return f"Error While Jac to Py AST conversion: {e}"
 
         ir = jac_pass_to_pass(py_ast_build_pass, schedule=py_code_gen_typed).ir
-        self.assertEqual(len(ir.get_all_sub_nodes(ast.Architype)), 7)
+        self.assertEqual(len(ir.get_all_sub_nodes(ast.Architype)), 21)
         captured_output = io.StringIO()
         sys.stdout = captured_output
         jac_import("needs_import_1", base_path=self.fixture_abs_path("./"))
@@ -611,7 +611,7 @@ class JacLanguageTests(TestCase):
 
         ir = jac_pass_to_pass(py_ast_build_pass, schedule=py_code_gen_typed).ir
         self.assertEqual(
-            len(ir.get_all_sub_nodes(ast.Architype)), 8
+            len(ir.get_all_sub_nodes(ast.Architype)), 27
         )  # Because of the Architype from math
         captured_output = io.StringIO()
         sys.stdout = captured_output
@@ -665,7 +665,7 @@ class JacLanguageTests(TestCase):
 
         ir = jac_pass_to_pass(py_ast_build_pass, schedule=py_code_gen_typed).ir
         self.assertEqual(
-            len(ir.get_all_sub_nodes(ast.Architype)), 38
+            len(ir.get_all_sub_nodes(ast.Architype)), 75
         )  # Because of the Architype from other imports
         captured_output = io.StringIO()
         sys.stdout = captured_output
@@ -873,7 +873,7 @@ class JacLanguageTests(TestCase):
         ir = jac_pass_to_pass(py_ast_build_pass, schedule=py_code_gen_typed).ir
         jac_ast = ir.pp()
         self.assertIn(" |   +-- String - 'Loop completed normally{}'", jac_ast)
-        self.assertEqual(len(ir.get_all_sub_nodes(ast.SubNodeList)), 269)
+        self.assertEqual(len(ir.get_all_sub_nodes(ast.SubNodeList)), 586)
         captured_output = io.StringIO()
         sys.stdout = captured_output
         jac_import("deep_convert", base_path=self.fixture_abs_path("./"))
@@ -1230,5 +1230,20 @@ class JacLanguageTests(TestCase):
         jac_import("architype_def_bug", base_path=self.fixture_abs_path("./"))
         sys.stdout = sys.__stdout__
         stdout_value = captured_output.getvalue().split("\n")
-        self.assertIn("MyNode", stdout_value[0])
-        self.assertIn("MyWalker", stdout_value[1])
+        self.assertIn("MyWalker", stdout_value[0])
+        self.assertIn("MyNode", stdout_value[1])
+
+    def test_visit_sequence(self) -> None:
+        """Test conn assign on edges."""
+        captured_output = io.StringIO()
+        sys.stdout = captured_output
+        jac_import("visit_sequence", base_path=self.fixture_abs_path("./"))
+        sys.stdout = sys.__stdout__
+        self.assertEqual(
+            "walker entry\nwalker enter to root\n"
+            "a-1\na-2\na-3\na-4\na-5\na-6\n"
+            "b-1\nb-2\nb-3\nb-4\nb-5\nb-6\n"
+            "c-1\nc-2\nc-3\nc-4\nc-5\nc-6\n"
+            "walker exit\n",
+            captured_output.getvalue(),
+        )
