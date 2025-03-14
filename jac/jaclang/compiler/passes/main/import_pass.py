@@ -176,7 +176,7 @@ class JacImportPass(Pass):
         from jaclang.compiler.passes.main import SubNodeTabPass
 
         if not os.path.exists(target):
-            self.error(f"Could not find module {target}")
+            # self.error(f"Could not find module {target}")
             return None
         if target in self.import_table:
             return self.import_table[target]
